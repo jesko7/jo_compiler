@@ -1,0 +1,24 @@
+{
+  "name": "tree-sitter-jo",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the Jo language",
+  "main": "bindings/node",
+  "scripts": {
+    "build": "tree-sitter generate && node-gyp build",
+    "generate": "tree-sitter generate"
+  },
+  "dependencies": {
+    "nan": "*"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "*"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.jo",
+      "file-types": ["jo"],
+      "highlights": "queries/highlights.scm",
+      "injection-regex": "jo"
+    }
+  ]
+}

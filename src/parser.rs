@@ -993,6 +993,26 @@ impl<'a> Parser<'a> {
                 // Represent as an i64 zero at the machine level.
                 Ok(Expr::new(ExprKind::IntLit(0), span))
             }
+            // `i64::method` and `f64::method` — primitive type static calls.
+            TokenKind::I64 | TokenKind::F64 => {
+                let type_name = self.advance().lexeme.clone();
+                if self.check(&TokenKind::ColonColon) {
+                    self.advance();
+                    let method = self
+                        .expect(TokenKind::Ident, "method name after `::`")?
+                        .lexeme
+                        .clone();
+                    return Ok(Expr::new(
+                        ExprKind::QualifiedIdent {
+                            module: type_name,
+                            name: method,
+                        },
+                        span,
+                    ));
+                }
+                self.error_here("expected an expression", "expected expression");
+                Err(ParseAbort)
+            }
             TokenKind::Ident => {
                 let name = self.advance().lexeme.clone();
                 // Qualified: IDENT :: IDENT

@@ -316,6 +316,20 @@ pub enum BinaryOp {
 }
 
 impl BinaryOp {
+    /// True for the six comparison operators (`==`, `!=`, `<`, `>`, `<=`, `>=`).
+    /// Their result is a boolean (machine `i64` 0/1) rather than the operand type.
+    pub fn is_comparison(self) -> bool {
+        matches!(
+            self,
+            BinaryOp::Eq
+                | BinaryOp::Ne
+                | BinaryOp::Lt
+                | BinaryOp::Gt
+                | BinaryOp::Le
+                | BinaryOp::Ge
+        )
+    }
+
     /// The stdlib method name this operator desugars to.
     pub fn method_name(self) -> &'static str {
         match self {

@@ -388,6 +388,44 @@ impl TypeChecker {
     fn check_fn(&mut self, f: &mut FnDecl, enclosing_struct: Option<&str>, suppress: bool) {
         let mut scopes = Scopes::new();
 
+        // Enforce the System V register budget the code generator relies on:
+        // 6 integer-class argument registers (rdi…r9) and 8 float-class ones
+        // (xmm0…xmm7). Float (`f64`) params consume a float register; every other
+        // param — `i64`, by-value structs, references, and `self` — consumes an
+        // integer register. Passing arguments on the stack is not implemented, so
+        // exceeding either budget is a hard error here rather than a codegen panic.
+        let (mut int_args, mut flt_args) = (0usize, 0usize);
+        for p in &f.params {
+            match &p.kind {
+                ParamKind::Named { ty: Type::F64, .. } => flt_args += 1,
+                _ => int_args += 1,
+            }
+        }
+        if int_args > 6 {
+            self.error(
+                f.span,
+                "E436",
+                format!(
+                    "function `{}` has {} integer/pointer parameters but only 6 \
+                     can be passed (arguments beyond 6 are not yet supported)",
+                    f.name, int_args
+                ),
+                "too many parameters",
+            );
+        }
+        if flt_args > 8 {
+            self.error(
+                f.span,
+                "E437",
+                format!(
+                    "function `{}` has {} float parameters but only 8 can be \
+                     passed (arguments beyond 8 are not yet supported)",
+                    f.name, flt_args
+                ),
+                "too many float parameters",
+            );
+        }
+
         // Resolve & declare parameters.
         for p in &mut f.params {
             match &mut p.kind {
@@ -706,7 +744,7 @@ impl TypeChecker {
             }
             ExprKind::CharLit(cp) => {
                 let cp = *cp;
-                if ctx.suppress_desugar || !self.wrapper_available("char", span) {
+                if !self.wrapper_available("char", span) {
                     Type::I64
                 } else {
                     expr.kind = make_struct_init_int(
@@ -721,7 +759,7 @@ impl TypeChecker {
             }
             ExprKind::BoolLit(b) => {
                 let b = *b;
-                if ctx.suppress_desugar || !self.wrapper_available("bool", span) {
+                if !self.wrapper_available("bool", span) {
                     Type::I64
                 } else {
                     let v = if b { 1 } else { 0 };
@@ -736,8 +774,7 @@ impl TypeChecker {
                 // `ptr` field carries the raw literal with an `i64` hint — keep
                 // it raw (it represents the .rodata address). Same in stdlib
                 // bodies. Otherwise wrap into the `string` struct.
-                if ctx.suppress_desugar
-                    || matches!(hint, Some(Type::I64))
+                if matches!(hint, Some(Type::I64))
                     || !self.wrapper_available("string", span)
                 {
                     Type::I64
@@ -834,10 +871,20 @@ impl TypeChecker {
             // --- unary (desugars to method calls, except in raw contexts) ---
             ExprKind::Unary { op, operand } => {
                 let op = *op;
-                let operand_ty = self.check_expr(operand, scopes, ctx, None);
-                // In raw stdlib contexts, `-`/`!` on i64 stay as machine ops.
-                if ctx.suppress_desugar && operand_ty.is_machine() {
-                    return operand_ty;
+                // Propagate the hint into the operand so `-1` / `-1.0` with an
+                // `i64`/`f64` annotation keeps its literal raw (e.g. `let a: i64
+                // = -1;`). `&`/`&mut`/deref are handled in their own arms, so the
+                // hint here only ever reaches a value operand of `-`/`!`.
+                let operand_ty = self.check_expr(operand, scopes, ctx, hint);
+                // Raw machine unary ops: `-x` / `!x` on a machine value (`i64`
+                // or `f64`) lower directly to machine instructions in codegen, in
+                // *all* contexts (mirrors the binary-operator rule). `-` yields
+                // the operand type; `!` yields a machine `i64` boolean (0/1).
+                if operand_ty.is_machine() {
+                    return match op {
+                        UnaryOp::Not => Type::I64,
+                        _ => operand_ty,
+                    };
                 }
                 let method = match op.method_name() {
                     Some(m) => m,
@@ -853,12 +900,41 @@ impl TypeChecker {
             // --- binary (desugars to method calls, except in raw contexts) --
             ExprKind::Binary { op, left, right } => {
                 let op = *op;
-                let left_ty = self.check_expr(left, scopes, ctx, None);
-                let right_ty = self.check_expr(right, scopes, ctx, None);
-                if ctx.suppress_desugar && left_ty.is_machine() {
-                    // Raw machine arithmetic stays as a BinaryExpr; result type
-                    // matches the left operand (i64 or f64).
-                    return left_ty;
+                // Hint propagation for raw machine ops: in `x OP literal` where `x`
+                // is a machine value, the bare literal should stay the same machine
+                // type (so `a == 7` with `a: i64` keeps `7` as raw i64, not `int`).
+                // Check the non-literal side first, then hint the literal side with
+                // its type. When neither (or both) is a literal, plain `None` hints
+                // suffice.
+                let left_is_lit = is_machine_literal(left);
+                let right_is_lit = is_machine_literal(right);
+                let (left_ty, right_ty) = if right_is_lit && !left_is_lit {
+                    let lt = self.check_expr(left, scopes, ctx, None);
+                    let hint = if lt.is_machine() { Some(lt.clone()) } else { None };
+                    let rt = self.check_expr(right, scopes, ctx, hint.as_ref());
+                    (lt, rt)
+                } else if left_is_lit && !right_is_lit {
+                    let rt = self.check_expr(right, scopes, ctx, None);
+                    let hint = if rt.is_machine() { Some(rt.clone()) } else { None };
+                    let lt = self.check_expr(left, scopes, ctx, hint.as_ref());
+                    (lt, rt)
+                } else {
+                    let lt = self.check_expr(left, scopes, ctx, None);
+                    let rt = self.check_expr(right, scopes, ctx, None);
+                    (lt, rt)
+                };
+                // Raw machine operators: when both operands are the *same* machine
+                // type (`i64 OP i64` or `f64 OP f64`), the operator lowers directly
+                // to a machine instruction in codegen — no stdlib method dispatch.
+                // This holds everywhere, not just in stdlib bodies. A comparison
+                // yields a machine `i64` boolean (0/1); arithmetic yields the
+                // operand type.
+                if left_ty.is_machine() && left_ty == right_ty {
+                    return if op.is_comparison() {
+                        Type::I64
+                    } else {
+                        left_ty
+                    };
                 }
                 self.desugar_binary_to_method(expr, op, &left_ty, &right_ty, span)
             }
@@ -890,11 +966,17 @@ impl TypeChecker {
 
     /// True when a bare literal should be kept raw (no desugaring).
     fn keep_literal_raw(&self, hint: Option<&Type>, ctx: &FnCtx, lit_machine: Type) -> bool {
-        if ctx.suppress_desugar {
+        // Explicit `let x: i64 = 10;` / `f64` annotation keeps the literal raw.
+        if matches!(hint, Some(h) if *h == lit_machine) {
             return true;
         }
-        // Explicit `let x: i64 = 10;` / `f64` annotation keeps the literal raw.
-        matches!(hint, Some(h) if *h == lit_machine)
+        // In machine-backed struct bodies, suppress desugaring only when there is
+        // no hint or the hint is the matching machine type — so `return 0` inside
+        // `extend i64` with return type `int` still desugars `0` to `int`.
+        if ctx.suppress_desugar {
+            return matches!(hint, None | Some(Type::I64) | Some(Type::F64));
+        }
+        false
     }
 
     /// A literal can only be wrapped into its stdlib struct (`int`, `float`, …)
@@ -1283,6 +1365,21 @@ impl TypeChecker {
             // has a method named `field`, it's a method call.
             if let Some(struct_name) = self.receiver_struct_name(&recv_ty) {
                 if let Some(method) = self.find_method(&struct_name, field).cloned() {
+                    // Static methods (no self) must be called with `::`, not `.`.
+                    if !method_has_self(&method) {
+                        self.error(
+                            span,
+                            "E495",
+                            format!(
+                                "`{}::{}` is a static method; call it as `{}::{}`",
+                                struct_name, field, struct_name, field
+                            ),
+                            "use `::` for static methods",
+                        );
+                        callee.ty = Some(Type::Void);
+                        expr.kind = ExprKind::Call { callee, args };
+                        return Type::Void;
+                    }
                     // Check arguments against the method's named params.
                     let named_params: Vec<Type> = method
                         .params
@@ -1331,6 +1428,23 @@ impl TypeChecker {
                     expr.kind = ExprKind::Call { callee, args };
                     return method.return_type.clone();
                 }
+                // Found the method, but it takes `self` — it's an instance method
+                // and must be called as `receiver.{name}(…)`, not `{module}::{name}`.
+                self.error(
+                    span,
+                    "E496",
+                    format!(
+                        "`{}::{}` is an instance method; call it as `receiver.{}(…)`",
+                        module, name, name
+                    ),
+                    "use `.` for instance methods",
+                );
+                for a in &mut args {
+                    self.check_expr(a, scopes, ctx, None);
+                }
+                callee.ty = Some(Type::Void);
+                expr.kind = ExprKind::Call { callee, args };
+                return method.return_type.clone();
             }
         }
 
@@ -1571,9 +1685,12 @@ impl TypeChecker {
         }
     }
 
-    /// Whether the `if`/`while` condition type is the stdlib `bool` struct.
+    /// Whether the `if`/`while` condition type is acceptable as a boolean. The
+    /// stdlib `bool` struct is the normal case; a raw machine `i64` is also
+    /// accepted (0 = false, non-zero = true) so raw comparisons like `a < b` on
+    /// `i64`/`f64` — which yield a machine `i64` 0/1 — can be used directly.
     fn expect_bool(&mut self, ty: &Type, span: Span) {
-        let ok = matches!(ty, Type::Named(n) if n == "bool");
+        let ok = matches!(ty, Type::Named(n) if n == "bool") || matches!(ty, Type::I64);
         if !ok {
             self.error(
                 span,
@@ -1705,6 +1822,20 @@ fn method_has_self(f: &FnDecl) -> bool {
 
 fn is_primitive_extend_target(name: &str) -> bool {
     matches!(name, "i64" | "f64")
+}
+
+/// A numeric literal that lowers to a machine type (`i64`/`f64`) and so can
+/// participate in raw machine operators if hinted to stay un-desugared. Also
+/// matches a negated literal (`-1`, `-2.0`), which parses as `Unary{Neg, lit}`.
+fn is_machine_literal(e: &Expr) -> bool {
+    match &e.kind {
+        ExprKind::IntLit(_) | ExprKind::FloatLit(_) => true,
+        ExprKind::Unary {
+            op: UnaryOp::Neg,
+            operand,
+        } => matches!(operand.kind, ExprKind::IntLit(_) | ExprKind::FloatLit(_)),
+        _ => false,
+    }
 }
 
 fn self_type(name: &str) -> Type {

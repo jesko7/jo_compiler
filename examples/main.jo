@@ -43,7 +43,6 @@ struct Person {
 
 extend Person {
     fn set_age(&mut self, age: int) void {
-        print("setting age to 20");
         self.age = 20;
     }
 }
@@ -138,21 +137,14 @@ extend int {
 }
 
 
-extend i64 {
-//    fn to_int(&self) int {
-        //print("to int");
-        //return 0;
-    //}
-}
-
-
 fn main() void {
     let p = Person::new(10);
-    let age = p.get_age();
 
-    print(age.to_string());
+    let num: i64 = 10;
+
+    print(p.get_age() -> string);
 
     p.set_age(20);
 
-    print(age -> string);
+    print(p.get_age() -> string);
 }

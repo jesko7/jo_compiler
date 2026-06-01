@@ -26,10 +26,14 @@ impl CodeGen {
     pub fn emit(program: &Program) -> String {
         let mut structs = HashMap::new();
         let mut primitive_methods: HashMap<String, Vec<FnDecl>> = HashMap::new();
+        // First pass: collect all structs.
         for item in &program.items {
             if let Item::Struct(s) = item {
                 structs.insert(s.name.clone(), s.clone());
             }
+        }
+        // Second pass: merge extend methods into their target structs.
+        for item in &program.items {
             if let Item::Extend(e) = item {
                 let sname = e.name.clone();
                 if is_primitive_extend_target(&sname) {
@@ -648,13 +652,24 @@ impl<'c> FnEmitter<'c> {
         }
     }
 
+    /// Evaluate a boolean condition into `rax` as a raw 0/1 value, then `cmp rax,
+    /// 0`. A `bool`-struct condition evaluates to a *pointer*, so its inner word
+    /// is loaded; a raw machine `i64` condition (e.g. from `a < b` on `i64`) is
+    /// already a value and is used directly.
+    fn emit_condition(&mut self, cond: &Expr) {
+        self.emit_expr(cond);
+        let is_struct = matches!(&cond.ty, Some(t) if is_struct_type(t, self.cg));
+        if is_struct {
+            self.emit("mov rax, [rax]".to_string());
+        }
+        self.emit("cmp rax, 0".to_string());
+    }
+
     fn emit_if(&mut self, if_stmt: &IfStmt) {
         let end_label = self.cg.new_label();
         for (cond, block) in &if_stmt.branches {
             let next_label = self.cg.new_label();
-            self.emit_expr(cond); // rax = pointer to bool struct
-            self.emit("mov rax, [rax]".to_string());
-            self.emit("cmp rax, 0".to_string());
+            self.emit_condition(cond);
             self.emit(format!("je {}", next_label));
             self.emit_block(block);
             self.emit(format!("jmp {}", end_label));
@@ -670,9 +685,7 @@ impl<'c> FnEmitter<'c> {
         let start = self.cg.new_label();
         let end = self.cg.new_label();
         self.emit_label(&start);
-        self.emit_expr(&w.condition);
-        self.emit("mov rax, [rax]".to_string());
-        self.emit("cmp rax, 0".to_string());
+        self.emit_condition(&w.condition);
         self.emit(format!("je {}", end));
         self.loop_stack.push((start.clone(), end.clone()));
         self.emit_block(&w.body);
@@ -803,8 +816,13 @@ impl<'c> FnEmitter<'c> {
                 }
             }
             UnaryOp::Not => {
+                // Logical NOT: 0 -> 1, any non-zero -> 0 (matches stdlib
+                // `int.not`). `xor rax, 1` would only toggle the low bit and give
+                // wrong results for values other than 0/1.
                 self.emit_expr(operand);
-                self.emit("xor rax, 1".to_string());
+                self.emit("test rax, rax".to_string());
+                self.emit("setz al".to_string());
+                self.emit("movzx rax, al".to_string());
             }
             UnaryOp::Deref => {
                 self.emit_expr(operand);
@@ -815,8 +833,11 @@ impl<'c> FnEmitter<'c> {
     }
 
     fn emit_binary(&mut self, op: BinaryOp, left: &Expr, right: &Expr, expr: &Expr) {
-        let ty = expr.ty.clone().unwrap_or(Type::I64);
-        if matches!(ty, Type::F64) {
+        // A comparison result is typed `i64` (0/1), so `expr.ty` no longer tells
+        // us whether the *operands* are floats. Decide float-vs-int from the left
+        // operand's own type instead.
+        let operand_ty = left.ty.clone().unwrap_or_else(|| expr.ty.clone().unwrap_or(Type::I64));
+        if matches!(operand_ty, Type::F64) {
             self.emit_expr(left);
             self.emit("sub rsp, 8".to_string());
             self.emit("movsd [rsp], xmm0".to_string());
@@ -829,7 +850,16 @@ impl<'c> FnEmitter<'c> {
                 BinaryOp::Sub => self.emit("subsd xmm0, xmm1".to_string()),
                 BinaryOp::Mul => self.emit("mulsd xmm0, xmm1".to_string()),
                 BinaryOp::Div => self.emit("divsd xmm0, xmm1".to_string()),
-                _ => {}
+                // Float comparisons: `ucomisd` sets flags, then a setCC reads them
+                // into rax as a 0/1 i64. Unsigned predicates (setb/seta/...) are
+                // the correct ones after ucomisd.
+                BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Gt
+                | BinaryOp::Le | BinaryOp::Ge => {
+                    self.emit("ucomisd xmm0, xmm1".to_string());
+                    self.emit(format!("{} al", float_setcc(op)));
+                    self.emit("movzx rax, al".to_string());
+                }
+                BinaryOp::Mod | BinaryOp::And | BinaryOp::Or => {}
             }
         } else {
             self.emit_expr(left);
@@ -850,7 +880,15 @@ impl<'c> FnEmitter<'c> {
                     self.emit("idiv rbx".to_string());
                     self.emit("mov rax, rdx".to_string());
                 }
-                _ => {}
+                // Signed integer comparisons: cmp + signed setCC -> 0/1 in rax.
+                BinaryOp::Eq | BinaryOp::Ne | BinaryOp::Lt | BinaryOp::Gt
+                | BinaryOp::Le | BinaryOp::Ge => {
+                    self.emit("cmp rax, rbx".to_string());
+                    self.emit(format!("{} al", int_setcc(op)));
+                    self.emit("movzx rax, al".to_string());
+                }
+                BinaryOp::And => self.emit("and rax, rbx".to_string()),
+                BinaryOp::Or => self.emit("or rax, rbx".to_string()),
             }
         }
     }
@@ -1156,6 +1194,33 @@ fn receiver_struct(ty: &Type) -> Option<String> {
 
 fn is_primitive_extend_target(name: &str) -> bool {
     matches!(name, "i64" | "f64")
+}
+
+/// The signed `setCC` mnemonic for an integer comparison operator.
+fn int_setcc(op: BinaryOp) -> &'static str {
+    match op {
+        BinaryOp::Eq => "sete",
+        BinaryOp::Ne => "setne",
+        BinaryOp::Lt => "setl",
+        BinaryOp::Gt => "setg",
+        BinaryOp::Le => "setle",
+        BinaryOp::Ge => "setge",
+        _ => unreachable!("int_setcc on non-comparison op"),
+    }
+}
+
+/// The `setCC` mnemonic for a float comparison after `ucomisd`. Float
+/// comparisons use the unsigned predicates (the carry/zero flags ucomisd sets).
+fn float_setcc(op: BinaryOp) -> &'static str {
+    match op {
+        BinaryOp::Eq => "sete",
+        BinaryOp::Ne => "setne",
+        BinaryOp::Lt => "setb",
+        BinaryOp::Gt => "seta",
+        BinaryOp::Le => "setbe",
+        BinaryOp::Ge => "setae",
+        _ => unreachable!("float_setcc on non-comparison op"),
+    }
 }
 
 fn self_type(name: &str) -> Type {
