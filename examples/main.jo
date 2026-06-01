@@ -1,0 +1,158 @@
+import stdlib::*;
+
+fn print(to_print: string) void {
+    let length = to_print.length;
+    let ptr = to_print.ptr;
+
+    !asm {
+        mov rax, 1      ; write
+        mov rdi, 1      ; stdout
+        mov rsi, %ptr       ; pointer to buffer
+        mov rdx, %length    ; number of bytes
+        syscall
+    }
+
+    new_line();
+}
+
+fn new_line() void {
+    let to_print = "\n";
+    let length = to_print.length;
+    let ptr = to_print.ptr;
+
+    !asm {
+        mov rax, 1      ; write
+        mov rdi, 1      ; stdout
+        mov rsi, %ptr       ; pointer to buffer
+        mov rdx, %length    ; number of bytes
+        syscall
+    }
+}
+
+struct Person {
+    age: int,
+
+    fn new(age: int) Person {
+        return Person { age = age };
+    }
+
+    fn get_age(&self) int {
+        return self.age;
+    }
+}
+
+extend Person {
+    fn set_age(&mut self, age: int) void {
+        print("setting age to 20");
+        self.age = 20;
+    }
+}
+
+extend int {
+    fn to_string(&self) string {
+        let value  = self.inner_value -> int;
+
+        // max length:
+        // -9223372036854775808
+        // 20 chars + sign
+        let buffer = malloc(21);
+
+        let current = value;
+        let len = 0;
+
+        // special case: 0
+        if current == 0 {
+            !asm {
+                mov rax, %buffer
+                mov byte [rax], '0'
+            }
+
+            return string {
+                ptr = buffer -> i64,
+                length = 1
+            };
+        }
+
+        let negative = 0;
+
+        if current < 0 {
+            negative = 1;
+            current = -current;
+        }
+
+        // write digits reversed
+        while current > 0 {
+            let digit = current % 10;
+
+            !asm {
+                mov rax, %buffer
+                add rax, %len
+
+                mov rbx, %digit
+                add rbx, 48
+
+                mov [rax], bl
+            }
+
+            len = len + 1;
+            current = current / 10;
+        }
+
+        if negative == 1 {
+            !asm {
+                mov rax, %buffer
+                add rax, %len
+                mov byte [rax], '-'
+            }
+
+            len = len + 1;
+        }
+
+        // reverse in-place
+        let left = 0;
+        let right = len - 1;
+
+        while left < right {
+            !asm {
+                mov rax, %buffer
+
+                mov rcx, %left
+                mov rdx, %right
+
+                mov bl, [rax + rcx]
+                mov bh, [rax + rdx]
+
+                mov [rax + rcx], bh
+                mov [rax + rdx], bl
+            }
+
+            left = left + 1;
+            right = right - 1;
+        }
+
+        return string {
+            ptr = buffer -> i64,
+            length = len -> i64
+        };
+    }
+}
+
+
+extend i64 {
+//    fn to_int(&self) int {
+        //print("to int");
+        //return 0;
+    //}
+}
+
+
+fn main() void {
+    let p = Person::new(10);
+    let age = p.get_age();
+
+    print(age.to_string());
+
+    p.set_age(20);
+
+    print(age -> string);
+}

@@ -1,0 +1,25 @@
+- line numbers are off
+- extend i64 {
+    fn to_int(&self) int {
+        print("to int");
+        return 0;
+    }
+}
+gives:
+error[E494]: argument 1 to `print`: expected `string`, found `i64`
+  --> examples/main.jo:143:15
+    |
+143 |         print("to int");
+    |               ^ type mismatch
+
+error[E432]: return type mismatch: expected `int`, found `i64`
+  --> examples/main.jo:144:9
+    |
+144 |         return 0;
+    |         ^ type mismatch
+
+error: aborting due to 2 previous errors
+
+-length = len -> i64
+doesnt throw an error even if to_int doesnt exist
+- current main compiles but [1]    52884 segmentation fault (core dumped)  ./main

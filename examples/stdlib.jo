@@ -1,0 +1,572 @@
+// Jo standard library
+// All types here are ordinary structs. Their method bodies use raw i64/f64 and
+// inline assembly directly — literal desugaring is suppressed in these bodies.
+//
+// ASM operands (%name, &name) only accept plain variable names.
+// To access a field in asm, assign it to a local variable first.
+
+fn malloc(size: int) int {
+    let ptr = 0;
+
+    !asm {
+        mov rax, 9          ; mmap
+        xor rdi, rdi        ; addr = NULL
+        mov rsi, %size      ; length
+        mov rdx, 3          ; PROT_READ  PROT_WRITE
+        mov r10, 34         ; MAP_PRIVATE  MAP_ANONYMOUS
+        mov r8, -1
+        xor r9, r9
+        syscall
+
+        mov %ptr, rax
+    }
+
+    return ptr;
+}
+
+// ---------------------------------------------------------------------------
+// int  —  64-bit signed integer
+// ---------------------------------------------------------------------------
+
+struct int {
+    inner_value: i64,
+
+    fn new(v: i64) int {
+        return int { inner_value = v };
+    }
+
+    fn add(&self, other: &int) int {
+        let a: i64 = self.inner_value;
+        let b: i64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            mov rax, %a
+            add rax, %b
+            mov %result, rax
+        }
+        return int { inner_value = result };
+    }
+
+    fn sub(&self, other: &int) int {
+        let a: i64 = self.inner_value;
+        let b: i64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            mov rax, %a
+            sub rax, %b
+            mov %result, rax
+        }
+        return int { inner_value = result };
+    }
+
+    fn mul(&self, other: &int) int {
+        let a: i64 = self.inner_value;
+        let b: i64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            mov rax, %a
+            imul rax, %b
+            mov %result, rax
+        }
+        return int { inner_value = result };
+    }
+
+    fn div(&self, other: &int) int {
+        let a: i64 = self.inner_value;
+        let b: i64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            mov rax, %a
+            cqo
+            idiv %b
+            mov %result, rax
+        }
+        return int { inner_value = result };
+    }
+
+    fn mod_(&self, other: &int) int {
+        let a: i64 = self.inner_value;
+        let b: i64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            mov rax, %a
+            cqo
+            idiv %b
+            mov %result, rdx
+        }
+        return int { inner_value = result };
+    }
+
+    fn neg(&self) int {
+        let a: i64 = self.inner_value;
+        let result: i64 = 0;
+        !asm {
+            mov rax, %a
+            neg rax
+            mov %result, rax
+        }
+        return int { inner_value = result };
+    }
+
+    fn eq(&self, other: &int) bool {
+        let a: i64 = self.inner_value;
+        let b: i64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            mov rax, %a
+            cmp rax, %b
+            sete al
+            movzx rax, al
+            mov %result, rax
+        }
+        return bool { inner_value = result };
+    }
+
+    fn ne(&self, other: &int) bool {
+        let a: i64 = self.inner_value;
+        let b: i64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            mov rax, %a
+            cmp rax, %b
+            setne al
+            movzx rax, al
+            mov %result, rax
+        }
+        return bool { inner_value = result };
+    }
+
+    fn lt(&self, other: &int) bool {
+        let a: i64 = self.inner_value;
+        let b: i64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            mov rax, %a
+            cmp rax, %b
+            setl al
+            movzx rax, al
+            mov %result, rax
+        }
+        return bool { inner_value = result };
+    }
+
+    fn gt(&self, other: &int) bool {
+        let a: i64 = self.inner_value;
+        let b: i64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            mov rax, %a
+            cmp rax, %b
+            setg al
+            movzx rax, al
+            mov %result, rax
+        }
+        return bool { inner_value = result };
+    }
+
+    fn le(&self, other: &int) bool {
+        let a: i64 = self.inner_value;
+        let b: i64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            mov rax, %a
+            cmp rax, %b
+            setle al
+            movzx rax, al
+            mov %result, rax
+        }
+        return bool { inner_value = result };
+    }
+
+    fn ge(&self, other: &int) bool {
+        let a: i64 = self.inner_value;
+        let b: i64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            mov rax, %a
+            cmp rax, %b
+            setge al
+            movzx rax, al
+            mov %result, rax
+        }
+        return bool { inner_value = result };
+    }
+
+    fn not(&self) bool {
+        let a: i64 = self.inner_value;
+        let result: i64 = 0;
+        !asm {
+            mov rax, %a
+            test rax, rax
+            setz al
+            movzx rax, al
+            mov %result, rax
+        }
+        return bool { inner_value = result };
+    }
+
+    fn to_float(&self) float {
+        let a: i64 = self.inner_value;
+        let result: f64 = 0.0;
+        !asm {
+            cvtsi2sd xmm0, %a
+            movsd %result, xmm0
+        }
+        return float { inner_value = result };
+    }
+}
+
+// ---------------------------------------------------------------------------
+// float  —  64-bit IEEE 754 floating-point
+// ---------------------------------------------------------------------------
+
+struct float {
+    inner_value: f64,
+
+    fn new(v: f64) float {
+        return float { inner_value = v };
+    }
+
+    fn add(&self, other: &float) float {
+        let a: f64 = self.inner_value;
+        let b: f64 = other.inner_value;
+        let result: f64 = 0.0;
+        !asm {
+            movsd xmm0, %a
+            addsd xmm0, %b
+            movsd %result, xmm0
+        }
+        return float { inner_value = result };
+    }
+
+    fn sub(&self, other: &float) float {
+        let a: f64 = self.inner_value;
+        let b: f64 = other.inner_value;
+        let result: f64 = 0.0;
+        !asm {
+            movsd xmm0, %a
+            subsd xmm0, %b
+            movsd %result, xmm0
+        }
+        return float { inner_value = result };
+    }
+
+    fn mul(&self, other: &float) float {
+        let a: f64 = self.inner_value;
+        let b: f64 = other.inner_value;
+        let result: f64 = 0.0;
+        !asm {
+            movsd xmm0, %a
+            mulsd xmm0, %b
+            movsd %result, xmm0
+        }
+        return float { inner_value = result };
+    }
+
+    fn div(&self, other: &float) float {
+        let a: f64 = self.inner_value;
+        let b: f64 = other.inner_value;
+        let result: f64 = 0.0;
+        !asm {
+            movsd xmm0, %a
+            divsd xmm0, %b
+            movsd %result, xmm0
+        }
+        return float { inner_value = result };
+    }
+
+    fn neg(&self) float {
+        let a: f64 = self.inner_value;
+        let result: f64 = 0.0;
+        !asm {
+            movsd xmm0, %a
+            xorpd xmm1, xmm1
+            subsd xmm1, xmm0
+            movsd %result, xmm1
+        }
+        return float { inner_value = result };
+    }
+
+    fn eq(&self, other: &float) bool {
+        let a: f64 = self.inner_value;
+        let b: f64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            movsd xmm0, %a
+            movsd xmm1, %b
+            ucomisd xmm0, xmm1
+            sete al
+            movzx rax, al
+            mov %result, rax
+        }
+        return bool { inner_value = result };
+    }
+
+    fn ne(&self, other: &float) bool {
+        let a: f64 = self.inner_value;
+        let b: f64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            movsd xmm0, %a
+            movsd xmm1, %b
+            ucomisd xmm0, xmm1
+            setne al
+            movzx rax, al
+            mov %result, rax
+        }
+        return bool { inner_value = result };
+    }
+
+    fn lt(&self, other: &float) bool {
+        let a: f64 = self.inner_value;
+        let b: f64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            movsd xmm0, %a
+            movsd xmm1, %b
+            ucomisd xmm0, xmm1
+            setb al
+            movzx rax, al
+            mov %result, rax
+        }
+        return bool { inner_value = result };
+    }
+
+    fn gt(&self, other: &float) bool {
+        let a: f64 = self.inner_value;
+        let b: f64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            movsd xmm0, %a
+            movsd xmm1, %b
+            ucomisd xmm0, xmm1
+            seta al
+            movzx rax, al
+            mov %result, rax
+        }
+        return bool { inner_value = result };
+    }
+
+    fn le(&self, other: &float) bool {
+        let a: f64 = self.inner_value;
+        let b: f64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            movsd xmm0, %a
+            movsd xmm1, %b
+            ucomisd xmm0, xmm1
+            setbe al
+            movzx rax, al
+            mov %result, rax
+        }
+        return bool { inner_value = result };
+    }
+
+    fn ge(&self, other: &float) bool {
+        let a: f64 = self.inner_value;
+        let b: f64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            movsd xmm0, %a
+            movsd xmm1, %b
+            ucomisd xmm0, xmm1
+            setae al
+            movzx rax, al
+            mov %result, rax
+        }
+        return bool { inner_value = result };
+    }
+
+    fn to_int(&self) int {
+        let a: f64 = self.inner_value;
+        let result: i64 = 0;
+        !asm {
+            movsd xmm0, %a
+            cvttsd2si rax, xmm0
+            mov %result, rax
+        }
+        return int { inner_value = result };
+    }
+}
+
+// ---------------------------------------------------------------------------
+// bool  —  boolean (0 = false, 1 = true)
+// ---------------------------------------------------------------------------
+
+struct bool {
+    inner_value: i64,
+
+    fn new(v: i64) bool {
+        return bool { inner_value = v };
+    }
+
+    fn not(&self) bool {
+        let a: i64 = self.inner_value;
+        let result: i64 = 0;
+        !asm {
+            mov rax, %a
+            xor rax, 1
+            mov %result, rax
+        }
+        return bool { inner_value = result };
+    }
+
+    fn and(&self, other: &bool) bool {
+        let a: i64 = self.inner_value;
+        let b: i64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            mov rax, %a
+            and rax, %b
+            mov %result, rax
+        }
+        return bool { inner_value = result };
+    }
+
+    fn or(&self, other: &bool) bool {
+        let a: i64 = self.inner_value;
+        let b: i64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            mov rax, %a
+            or rax, %b
+            mov %result, rax
+        }
+        return bool { inner_value = result };
+    }
+
+    fn eq(&self, other: &bool) bool {
+        let a: i64 = self.inner_value;
+        let b: i64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            mov rax, %a
+            cmp rax, %b
+            sete al
+            movzx rax, al
+            mov %result, rax
+        }
+        return bool { inner_value = result };
+    }
+
+    fn ne(&self, other: &bool) bool {
+        let a: i64 = self.inner_value;
+        let b: i64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            mov rax, %a
+            cmp rax, %b
+            setne al
+            movzx rax, al
+            mov %result, rax
+        }
+        return bool { inner_value = result };
+    }
+}
+
+// ---------------------------------------------------------------------------
+// char  —  Unicode scalar value stored as i64 codepoint
+// ---------------------------------------------------------------------------
+
+struct char {
+    inner_value: i64,
+
+    fn new(v: i64) char {
+        return char { inner_value = v };
+    }
+
+    fn eq(&self, other: &char) bool {
+        let a: i64 = self.inner_value;
+        let b: i64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            mov rax, %a
+            cmp rax, %b
+            sete al
+            movzx rax, al
+            mov %result, rax
+        }
+        return bool { inner_value = result };
+    }
+
+    fn ne(&self, other: &char) bool {
+        let a: i64 = self.inner_value;
+        let b: i64 = other.inner_value;
+        let result: i64 = 0;
+        !asm {
+            mov rax, %a
+            cmp rax, %b
+            setne al
+            movzx rax, al
+            mov %result, rax
+        }
+        return bool { inner_value = result };
+    }
+
+    fn to_int(&self) int {
+        let a: i64 = self.inner_value;
+        return int { inner_value = a };
+    }
+}
+
+// ---------------------------------------------------------------------------
+// string  —  UTF-8 byte string (.rodata pointer + byte length)
+//
+// ptr    — i64 holding the address of the first byte
+// length — i64 byte count (not including the null terminator)
+//
+// String literals are stored in .rodata (read-only, static lifetime).
+// The compiler places each literal there and passes its address as ptr.
+// There is no heap allocator in v1. Mutation of ptr's bytes is UB.
+// ---------------------------------------------------------------------------
+
+struct string {
+    ptr:    i64,
+    length: i64,
+
+    fn new(p: i64, len: i64) string {
+        return string { ptr = p, length = len };
+    }
+
+    fn eq(&self, other: &string) bool {
+        let sp: i64 = self.ptr;
+        let sl: i64 = self.length;
+        let op: i64 = other.ptr;
+        let ol: i64 = other.length;
+        let same: i64 = 0;
+        !asm {
+            mov rsi, %sp
+            mov rdi, %op
+            mov rcx, %sl
+            cmp rcx, %ol
+            jne .str_ne
+            test rcx, rcx
+            jz .str_eq
+        .str_loop:
+            mov al, [rsi]
+            cmp al, [rdi]
+            jne .str_ne
+            inc rsi
+            inc rdi
+            dec rcx
+            jnz .str_loop
+        .str_eq:
+            mov %same, 1
+            jmp .str_done
+        .str_ne:
+            mov %same, 0
+        .str_done:
+        }
+        return bool { inner_value = same };
+    }
+
+    fn ne(&self, other: &string) bool {
+        let r = self.eq(other);
+        return r.not();
+    }
+
+    fn len(&self) int {
+        let l: i64 = self.length;
+        return int { inner_value = l };
+    }
+}
